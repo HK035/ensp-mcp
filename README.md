@@ -1,5 +1,7 @@
 # ensp-mcp
 
+**English** · [简体中文](README.zh-CN.md)
+
 Give an AI agent (or your shell) a working pair of hands on **Huawei eNSP**.
 
 eNSP has no API, no plugin interface and no remote control. But version 1.3 turns out
