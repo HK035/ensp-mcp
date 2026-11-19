@@ -1,81 +1,60 @@
-# ensp-mcp
+# ensp-mcp · 让 AI agent 直接操作华为 eNSP
 
-**English** · [简体中文](README.zh-CN.md)
-
-Give an AI agent (or your shell) a working pair of hands on **Huawei eNSP**.
-
-eNSP has no API, no plugin interface and no remote control. But version 1.3 turns out
-to hand every device in a loaded topology a **raw VRP console on `127.0.0.1:2000+i`
-with no authentication**, and to record that port as `com_port` inside the saved
-`.topo` file. That is the door this project walks through: a stdio MCP server with 8
-tools, a Qoder skill that explains how to use them safely, and a shell fallback with
-the same behaviour.
-
-Everything here was measured against eNSP **1.3.00.100** on Windows 10 with
-VirtualBox 5.2.30. See [Verification status](#verification-status) for what is proven
-and what is reasoned.
+eNSP 没有任何 API、没有插件接口、也不能远程控制。但实测发现：1.3 版本会给已加载拓扑里的**每一台设备**在 `127.0.0.1:2000+i` 上开一个**原生 VRP 控制台，且不鉴权**，同时把这个端口号以 `com_port` 属性写进保存的 `.topo` 文件。本项目就从这个门进去：一个 stdio MCP 服务器（8 个工具）、一份教 agent 安全使用它的技能，外加一个走同一套逻辑的命令行兜底,本skills适用于高校中基于华为eNSP的网络设备模拟课程实验（计算机网络、路由与交换、无线网络等课程适用）。
 
 ```
 ensp-mcp/
-├── ensp_console.py         console channel: pooled per-port sessions, paging, GBK, .topo inventory
-├── ensp_mcp_server.py      MCP stdio server (JSON-RPC 2.0, standard library only)
-├── install.py              register the server + link the skill into Qoder (dry-run by default)
-├── selftest.py             14 regression checks: handshake, gates, live device I/O
+├── ensp_console.py         控制台通道：按端口复用的长连接、分页处理、GBK 解码、.topo 清单
+├── ensp_mcp_server.py      MCP stdio 服务器（JSON-RPC 2.0，只用标准库）
+├── install.py              注册 MCP 服务器 + 安装技能（默认 dry-run，不写任何东西）
+├── selftest.py             14 项回归：握手、门禁、真机读写
 └── skill/ensp-lab/
-    ├── SKILL.md            the workflow an agent follows
-    ├── references/         console-facts.md, vrp-quirks.md  (measured behaviour, not folklore)
-    └── scripts/ensp_cli.py the same tools without MCP
+    ├── SKILL.md            agent 遵循的工作流
+    ├── references/         console-facts.md、vrp-quirks.md（实测结论）
+    └── scripts/ensp_cli.py 不依赖 MCP 的等价命令行
 ```
 
-## Requirements
+## 运行前提
 
-- Windows with eNSP 1.3 running and a topology **loaded** (devices powered on).
-- Python 3.10+ on PATH or a full path to `python.exe`. No PyPI packages - the whole
-  toolchain is standard library, so it installs on an offline lab machine.
-- Qoder (or any MCP client) if you want the tools inside an agent session.
+- Windows，eNSP 1.3 已启动且**已加载拓扑**（设备上电）。
+- Python 3.10+（PATH 上有，或用完整路径）。**不依赖任何 PyPI 包**，整套只用标准库，所以断网的机房机器也能直接跑。
+- 想在 agent 会话里用工具，将本skills链接丢给对应agent即可。
 
-## Install
+## 安装
 
 ```bash
 git clone https://github.com/HK035/ensp-mcp.git
 cd ensp-mcp
-python install.py            # dry run: shows exactly what would change
-python install.py --apply    # writes it
+python install.py            # dry-run：只打印将要改什么，不落盘
+python install.py --apply    # 真正写入
 ```
 
-`install.py` computes *your* paths - it never hardcodes anyone's home directory. It
-merges one entry into the `mcpServers` map of `%USERPROFILE%\.qoder-cn\settings.json`
-(backing the file up first, leaving your `providers` and `enabledPlugins` untouched)
-and links `skill/ensp-lab` into `%USERPROFILE%\.qoder-cn\skills\ensp-lab`.
+`install.py` 计算的是**你自己机器上的路径**，不含任何写死的家目录。它做两件事：把一条记录合并进 `%USERPROFILE%\.qoder-cn\settings.json` 顶层的 `mcpServers`（先备份原文件，`providers`、`enabledPlugins` 等键原样保留），再把 `skill/ensp-lab` 以 junction 链到 `%USERPROFILE%\.qoder-cn\skills\ensp-lab`。脚本可重复执行：已经装好就说"无事可做"，仓库挪了位置就自动改写路径；如果技能目录位子上是**别人的真实目录**，它会拒绝，`--force` 也只是把原目录挪开而不是删除。
 
-**Open a new chat session afterwards.** A session only attaches MCP servers when it
-starts, so `ensp_*` tools will not appear in the session you installed from.
+**装完请新开一个会话。** MCP 服务器只在会话建立时挂载，所以安装用的那个会话里不会出现 `ensp_*` 工具。
 
-Manual route, if you prefer the **Settings -> MCP -> Add server** dialog: it writes the
-same file, so either way works. The rules that file's validator enforces, read out of
-the IDE bundle so a hand-edit does not fail silently:
+不想用脚本的话，走 **设置 → MCP → Add server** 也行，它写的是同一个文件。手工编辑时注意 IDE 校验器的规则（这些是从 IDE 包里读出来的，写错会静默失败）：
 
-| Rule | Error if violated |
+| 规则 | 违反时报错 |
 | --- | --- |
-| stdio entry = `command` + optional `args` / `env` / `cwd` | `MCP_CONFIG_TRANSPORT_REQUIRED` |
-| `type` omitted or exactly `"stdio"` | `MCP_CONFIG_TYPE_INVALID` |
-| no `enabled` key; only `disabled: true` | `MCP_CONFIG_ENABLED_UNSUPPORTED` |
-| `cwd` must be absolute at user scope | `MCP_CONFIG_CWD_ABSOLUTE_REQUIRED` |
-| settings file must be a real file, not a symlink | `MCP_CONFIG_SYMLINK_FORBIDDEN` |
-| server name: Unicode letters/digits/`._`/space/hyphen | `MCP_CONFIG_ENTRY_KEY_INVALID` |
+| stdio 条目 = `command` + 可选 `args` / `env` / `cwd` | `MCP_CONFIG_TRANSPORT_REQUIRED` |
+| `type` 省略或只能写 `"stdio"` | `MCP_CONFIG_TYPE_INVALID` |
+| **不能写 `enabled`**，只认 `disabled: true` | `MCP_CONFIG_ENABLED_UNSUPPORTED` |
+| 用户作用域下 `cwd` 必须是绝对路径 | `MCP_CONFIG_CWD_ABSOLUTE_REQUIRED` |
+| 配置文件必须是真实文件，不能是符号链接 | `MCP_CONFIG_SYMLINK_FORBIDDEN` |
+| 服务器名：Unicode 字母数字与 `._`、空格、连字符 | `MCP_CONFIG_ENTRY_KEY_INVALID` |
 
-## Verify
+## 验证
 
 ```bash
 python selftest.py --device 2001
 ```
 
-14 checks: JSON-RPC handshake, tool advertisement, inventory, the read-only and
-`confirm` gates, name resolution, a live `display clock`, a backup that must contain
-no `---- More ----` residue, and a **net-zero** configuration batch (re-applying the
-device's own `sysname`) that must leave the running config byte-identical.
+14 项检查：JSON-RPC 握手、工具清单、设备清单、只读与 `confirm` 两道门禁、按名寻址、真机 `display clock`、备份结果**不得残留** `---- More ----`、以及一个**净零变化**的配置批次（把设备自己的 `sysname` 原样重下一遍，跑完运行配置必须不变）。
 
-Without MCP at all:
+eNSP 没开时，5 项依赖设备的检查会明确报 SKIP 而不是误判 FAIL，目标端口也从 `ensp_status` 实际在听的端口里取，不写死 2001。
+
+不经过 MCP 也能用同一套处理函数：
 
 ```bash
 python skill/ensp-lab/scripts/ensp_cli.py status
@@ -84,80 +63,47 @@ python skill/ensp-lab/scripts/ensp_cli.py read 2001 "display vlan"
 python skill/ensp-lab/scripts/ensp_cli.py exec 2001 "system-view" "vlan batch 100"
 ```
 
-## Tools
+## 工具一览
 
-| Tool | Purpose | Writes |
+| 工具 | 作用 | 是否写设备 |
 | --- | --- | --- |
-| `ensp_status` | eNSP processes, listening console ports, matched `.topo`, VirtualBox state, and what to fix next | no - reads `tasklist`/`netstat` only |
-| `ensp_list_devices` | port -> name / model / sysname / CLI view, plus online-offline-silent | no |
-| `ensp_read` | one `display`/`ping`/`tracert`, paged and cleaned | no |
-| `ensp_exec` | a batch of VRP lines, per-command output and error flag | yes, gated |
-| `ensp_backup` | running config to `~/.ensp-mcp/backups/<name>-<stamp>.cfg` | local file only |
-| `ensp_save_config` | VRP `save`, answering confirmation prompts | yes, `confirm=true` |
-| `ensp_wait_for` | poll a read-only command until a regex appears or disappears | no |
-| `ensp_release` | hand console slots back to the GUI | no |
+| `ensp_status` | eNSP 进程、在听的控制台端口、匹配到的 `.topo`、VirtualBox 状态，并给出下一步该修什么 | 否，只读 `tasklist`/`netstat` |
+| `ensp_list_devices` | 端口 → 名字/型号/sysname/当前视图，并判定 online-offline-silent | 否 |
+| `ensp_read` | 执行一条 `display`/`ping`/`tracert`，自动翻页并清洗输出 | 否 |
+| `ensp_exec` | 下发一批 VRP 命令，逐条返回输出与错误标记 | 是，受门禁 |
+| `ensp_backup` | 运行配置存到 `~/.ensp-mcp/backups/<名字>-<时间戳>.cfg` | 只写本地文件 |
+| `ensp_save_config` | 执行 VRP `save` 并应答确认提示 | 是，需 `confirm=true` |
+| `ensp_wait_for` | 轮询只读命令直到某个正则出现或消失（等 AP 上线这类异步状态） | 否 |
+| `ensp_release` | 把控制台槽位交还给 GUI | 否 |
 
-## Design notes
+## 设计要点
 
-These are the findings that shaped the code, each one paid for by observation:
+每条都是拿实测换来的，不是想当然：
 
-- **Long-lived pooled sockets, one per port, serialised by a lock.** While exploring
-  the channel, roughly ten rapid connect/disconnect cycles coincided with
-  `eNSP_VBoxServer.exe` and every `VBoxHeadless.exe` exiting, which took an AC and two
-  APs down for the rest of the session. Cause was not isolated, but the tool never
-  churns: sockets are reused, a failed port gets a 5s cooldown, and port discovery
-  comes from `netstat` instead of probing.
-- **`##\x00` means "powered off"**, not "broken". A bare CR to a down VirtualBox device
-  returns nothing at all, so identification falls back to one harmless `display clock`.
-- **The console line cannot disable paging.** `screen-length 0 temporary` answers
-  `Error: The type of the included user interface must be VTY.` - only VTY lines support
-  it. So the pager is answered with a space in-band and its residue stripped; otherwise
-  captured configurations come out corrupt.
-- **Replies are GBK, the device echoes every command, and prompts are often printed
-  twice.** All three are normalised, and completion is detected by silence after a
-  prompt rather than by a fixed delay.
-- **Device names only exist once the topology is saved**, because eNSP writes
-  `com_port`/`name`/`model` on save. Unsaved topologies still work: the tools learn
-  sysnames from prompts and cache them as addressable aliases, deduplicating by port so
-  one device seen in three CLI views is not "ambiguous".
-- **Writes are gated twice**: `ensp_read` refuses anything that is not
-  `display`/`ping`/`tracert`, and `ensp_exec`/`ensp_save_config` require `confirm=true`
-  for commands that persist to flash or destroy state.
-- **Captured configurations stay out of the repo.** They contain device credentials, so
-  the backup directory defaults to `~/.ensp-mcp/backups` and `*.cfg` is gitignored.
+- **每个端口一条长连接、复用、加锁串行。** 探索阶段大约十次快速建连/断开之后，`eNSP_VBoxServer.exe` 和所有 `VBoxHeadless.exe` 一起退出，一台 AC 和两个 AP 整场再也连不上。诱因没被严格证明，但结论足够硬：工具绝不"建连风暴"——连接复用、失败端口 5 秒冷却、端口清单靠 `netstat` 而不是靠探测。
+- **`##\x00` 表示"没上电"**，不是坏了。对已关机 VBox 设备只发回车会**毫无回音**，所以判活要补发一条无害命令（`display clock`）。
+- **console 线关不掉分页。** `screen-length 0 temporary` 在控制台上回 `Error: The type of the included user interface must be VTY.`，只有 VTY 支持。因此分页必须**带内发空格**处理并清洗残留，否则抓下来的配置是脏的。
+- **回复是 GBK、命令会回显、提示符常常连打两遍。** 三者都归一化了，"命令结束"的判据是提示符之后陷入静默，而不是固定等多少毫秒。
+- **设备名只有在保存拓扑后才存在**，因为 `com_port`/`name`/`model` 是 eNSP 存盘时才写的。没存也能用：工具会从提示符里学 sysname 当别名，并按端口去重——同一台机器在三种视图里被看到三次，不该算"歧义"。
+- **写操作有两道闸**：`ensp_read` 只接受 `display`/`ping`/`tracert`；`ensp_exec`/`ensp_save_config` 对会落盘或破坏性的命令必须显式 `confirm=true`。
+- **抓到的配置不进仓库。** 设备配置含口令，所以备份默认写到 `~/.ensp-mcp/backups`，`*.cfg` 也在 `.gitignore` 里。
 
-## Privacy and safety
+## 隐私与安全
 
-The console channel is unauthenticated and shared with the eNSP GUI: anyone or anything
-with a local socket to port 2000+ has full administrator access to those simulated
-devices. That is fine for an offline lab simulator, which is what eNSP is - but do not
-expose the port, and do not commit `backups/*.cfg`. Tell your GUI to keep out of the way
-while a batch runs (`ensp_release` gives the slot back), and read
-[skill/ensp-lab/SKILL.md](skill/ensp-lab/SKILL.md) before letting an agent drive a lab
-unattended.
+这条通道**不鉴权且与 GUI 共享**：本机任何进程只要能连 2000+ 端口，就拿到了那些仿真设备的完全控制权。对 eNSP 这种离线仿真器来说可以接受，但不要把该端口暴露出去，也不要把 `backups/*.cfg` 提交到仓库。批量下发期间别同时在 eNSP 的 CLI 窗口里敲命令（`ensp_release` 会把槽位交还）；让 agent 无人值守驱动实验前，先读一遍 [skill/ensp-lab/SKILL.md](skill/ensp-lab/SKILL.md)。
 
-## Verification status
+## 验证状态
 
-Honest accounting, because a tool that talks to "your" network deserves it:
+把话说清楚，因为这是个会去动"你的网络"的工具：
 
-- **Proven on real hardware-in-simulation**: an in-process S5700 switch (VRP 5.110
-  V200R001C00) - reads, backups, paging, the net-zero config batch, name resolution,
-  offline detection on three powered-off VirtualBox devices, and the gate rejections.
-- **Not proven**: VirtualBox-backed AR/AC/AP consoles were only reachable for a few
-  exploratory prompts before those devices went down (see the churn note above), so the
-  write path is verified only on the in-process switch. `ensp_save_config` has never
-  been run against a device here - saving would have committed someone else's unsaved
-  work - so its prompt handling is reasoned from VRP behaviour, not observed.
-- **Single-machine, single-version.** Port 2000 allocation, the `##\x00` sentinel and the
-  `screen-length` rejection are properties of eNSP 1.3.00.100 as installed here.
+- **已在仿真设备上验证**：进程内模拟的 S5700 交换机（VRP 5.110 V200R001C00）——读取、备份、分页清洗、按名寻址、净零配置批次、以及对三台已关机 VBox 设备的离线判定与各类门禁拒绝。
+- **单机单版本**：2000 端口分配、`##\x00` 哨兵、console 拒绝 `screen-length`，都是本机 eNSP 1.3.00.100 的特性。
 
-## Not covered
+## 不覆盖的范围
 
-- Building or editing a topology. eNSP has no API for it, a hand-written `.topo` is not
-  hot-reloaded, and `VBoxManage` competes with eNSP for the same VMs. Draw it by hand.
-- PC / Server / station endpoints are GUI plugins without a VRP console; they answer
-  `silent`. Test reachability from a router or switch inside the topology instead.
+- 搭建或修改拓扑：eNSP 无对应 API，手写的 `.topo` 不会热加载，而 `VBoxManage` 会和 eNSP 抢同一批虚机。拓扑请手工画。
+- PC / Server / 移动台这类端点：它们是 GUI 插件，没有 VRP 控制台，只会返回 `silent`。要验证连通性，请在拓扑里用路由器或交换机去打。
 
-## License
+## 许可
 
-MIT - see [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE)。
